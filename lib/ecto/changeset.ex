@@ -624,7 +624,7 @@ defmodule Ecto.Changeset do
 
       def changeset(struct, params) do
         struct
-        |> cast(struct, params, [:title, :body])
+        |> cast(params, [:title, :body])
         |> validate_required([:title, :body])
         |> case do
           %{valid?: false, changes: changes} = changeset when changes == %{} ->
@@ -1464,6 +1464,8 @@ defmodule Ecto.Changeset do
   ## Options
 
     * `:message` - the message on failure, defaults to "can't be blank"
+    * `:trim` - a boolean that sets whether whitespaces are removed before
+      running the validation on binaries/strings, defaults to true
 
   ## Examples
 
@@ -1475,11 +1477,12 @@ defmodule Ecto.Changeset do
   def validate_required(%Changeset{} = changeset, fields, opts \\ []) do
     %{required: required, errors: errors, changes: changes} = changeset
     message = message(opts, "can't be blank")
+    trim = Keyword.get(opts, :trim, true)
     fields = List.wrap(fields)
 
     fields_with_errors =
       for field <- fields,
-          missing?(changeset, field),
+          missing?(changeset, field, trim),
           ensure_field_exists!(changeset, field),
           is_nil(errors[field]),
           do: field
@@ -1539,21 +1542,21 @@ defmodule Ecto.Changeset do
     else
       pk_pairs = pk_fields_and_values(changeset, struct)
 
+      pk_query =
+        # It should not conflict with itself for updates
+        if Enum.any?(pk_pairs, &(&1 |> elem(1) |> is_nil())) do
+          struct
+        else
+          Enum.reduce(pk_pairs, struct, fn {field, value}, acc ->
+            Ecto.Query.or_where(acc, [q], field(q, ^field) != ^value)
+          end)
+        end
+
       query =
-        struct
+        pk_query
         |> Ecto.Query.where(^where_clause)
         |> Ecto.Query.select(true)
         |> Ecto.Query.limit(1)
-
-      query =
-        # It should not conflict with itself for updates
-        if Enum.any?(pk_pairs, &(&1 |> elem(1) |> is_nil())) do
-          query
-        else
-          Enum.reduce(pk_pairs, query, fn {field, value}, acc ->
-            Ecto.Query.where(acc, [q], field(q, ^field) != ^value)
-          end)
-        end
 
       query =
         if prefix = opts[:prefix] do
@@ -1586,20 +1589,21 @@ defmodule Ecto.Changeset do
     true
   end
 
-  defp missing?(changeset, field) when is_atom(field) do
+  defp missing?(changeset, field, trim) when is_atom(field) do
     case get_field(changeset, field) do
       %{__struct__: Ecto.Association.NotLoaded} ->
         raise ArgumentError, "attempting to validate association `#{field}` " <>
                              "that was not loaded. Please preload your associations " <>
                              "before calling validate_required/3 or pass the :required " <>
                              "option to Ecto.Changeset.cast_assoc/3"
-      value when is_binary(value) -> String.trim_leading(value) == ""
+      value when is_binary(value) and trim -> String.trim_leading(value) == ""
+      value when is_binary(value) -> value == ""
       nil -> true
       _ -> false
     end
   end
 
-  defp missing?(_changeset, field) do
+  defp missing?(_changeset, field, _trim) do
     raise ArgumentError, "validate_required/3 expects field names to be atoms, got: `#{inspect field}`"
   end
 
